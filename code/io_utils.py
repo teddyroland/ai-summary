@@ -54,16 +54,6 @@ def load_text(filename: str, plaintext_dir: Path | None = None) -> str:
     return (plaintext_dir / filename).read_text(encoding="utf-8")
 
 
-def list_plaintext_files(plaintext_dir: Path | None = None) -> list[Path]:
-    """Return all .txt files in data/plaintext, sorted by filename.
-
-    Anything that isn't a .txt file (notably .DS_Store on macOS) is skipped.
-    """
-    if plaintext_dir is None:
-        plaintext_dir = PLAINTEXT_DIR
-    return sorted(p for p in plaintext_dir.iterdir() if p.suffix == ".txt")
-
-
 def append_jsonl(path: Path, record: dict) -> None:
     """Append one JSON record as a single line to a JSONL file.
 
@@ -104,9 +94,9 @@ def compile_csv(
     3. Sort by `sort_by` columns.
     4. Select only the requested `columns` for the final CSV.
 
-    The compound dedup matters because the same passage_id can appear for
-    multiple models (each model selects its own passage labelled p_01_01),
-    so we typically dedup by (model, passage_id) rather than passage_id alone.
+    The compound dedup matters because the same passage_id appears across
+    (text, model) pairs — uniqueness is the combination of
+    (text_id, model, passage_id), not passage_id alone.
 
     Returns the number of rows written.
     """

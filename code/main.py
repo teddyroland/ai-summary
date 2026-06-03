@@ -24,15 +24,18 @@ import pipeline
 # ---------------------------------------------------------------------------
 
 PASSAGE_CSV_COLUMNS = [
-    "passage_id", "text_id", "title", "model", "question", "passage_text",
+    "text_id", "model", "passage_id", "requirement", "passage_text",
 ]
-PASSAGE_SORT_BY = ["model", "passage_id"]
+PASSAGE_DEDUP_BY = ["text_id", "model", "passage_id"]
+PASSAGE_SORT_BY = ["model", "text_id", "passage_id"]
 
 SUMMARY_CSV_COLUMNS = [
-    "summary_id", "passage_id", "text_id", "title",
-    "model", "requirement", "summary_text",
+    "text_id", "model", "passage_id",
+    "summary_type", "summary_id",
+    "requirement", "summary_text",
 ]
-SUMMARY_SORT_BY = ["model", "passage_id", "summary_id"]
+SUMMARY_DEDUP_BY = ["text_id", "model", "passage_id", "summary_type", "summary_id"]
+SUMMARY_SORT_BY = ["model", "text_id", "passage_id", "summary_id"]
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -117,22 +120,24 @@ def run(
 
     # Stage 4b — scene-setting summaries.
     print(f"[2/3] Generating scene-setting summaries")
-    scene = pipeline.run_scene_summaries(
+    scene = pipeline.run_summaries(
+        kind="scene",
         passages=passages,
         meta_rows=meta_rows,
         model_keys=model_keys,
-        scene_n=scene_n,
+        summary_n=scene_n,
         temp_dir=temp_dir,
     )
     print(f"      wrote {len(scene)} scene-summary records to temp/")
 
     # Stage 4c — global-theorizing summaries.
     print(f"[3/3] Generating global-theorizing summaries")
-    global_summaries = pipeline.run_global_summaries(
+    global_summaries = pipeline.run_summaries(
+        kind="global",
         passages=passages,
         meta_rows=meta_rows,
         model_keys=model_keys,
-        global_n=global_n,
+        summary_n=global_n,
         temp_dir=temp_dir,
     )
     print(f"      wrote {len(global_summaries)} global-summary records to temp/")
@@ -143,22 +148,21 @@ def run(
         jsonl_paths=_gather_jsonl_paths(model_keys, "passages", temp_dir),
         csv_path=results_dir / "passages.csv",
         columns=PASSAGE_CSV_COLUMNS,
-        # Same passage_id appears across models — dedup on (model, passage_id).
-        dedup_by=["model", "passage_id"],
+        dedup_by=PASSAGE_DEDUP_BY,
         sort_by=PASSAGE_SORT_BY,
     )
     counts["scene"] = io_utils.compile_csv(
         jsonl_paths=_gather_jsonl_paths(model_keys, "scene", temp_dir),
         csv_path=results_dir / "scene_summaries.csv",
         columns=SUMMARY_CSV_COLUMNS,
-        dedup_by=["model", "summary_id"],
+        dedup_by=SUMMARY_DEDUP_BY,
         sort_by=SUMMARY_SORT_BY,
     )
     counts["global"] = io_utils.compile_csv(
         jsonl_paths=_gather_jsonl_paths(model_keys, "global", temp_dir),
         csv_path=results_dir / "global_summaries.csv",
         columns=SUMMARY_CSV_COLUMNS,
-        dedup_by=["model", "summary_id"],
+        dedup_by=SUMMARY_DEDUP_BY,
         sort_by=SUMMARY_SORT_BY,
     )
     print(

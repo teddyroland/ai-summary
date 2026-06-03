@@ -10,14 +10,13 @@ Status legend: `[ ]` pending, `[~]` in progress, `[x]` completed.
 ## Phase 2 — Prototype (assistant)
 
 - [x] Scaffold files: `code/`, `tests/`, `results/`, `temp/`, `README.md`, `TODO.md`, `CLAUDE.md`, `requirements.txt`.
-- [x] `code/ids.py` — passage_id / summary_id helpers + tests.
 - [x] `code/io_utils.py` — metadata loading, plaintext loading, JSONL append, CSV compilation + tests.
 - [x] `code/prompts.py` — six prompt templates + render functions + tests.
 - [x] `code/models.py` — multi-provider `call_model()` with retries + mocked tests.
-- [x] `code/pipeline.py` — three stage orchestrators + mocked end-to-end test.
+- [x] `code/pipeline.py` — three stage orchestrators (passage_id / summary_id are 1-based integer counters set inline) + mocked end-to-end test.
 - [x] `code/main.py` — CLI entry point.
-- [x] Mocked smoke test: 44 tests green; `python code/main.py` with defaults produces correct CSVs in `results/`.
-- [x] Real API debug: GPT-4.1 on the poetry text with `--selection 1 --scene 1 --global 1` — verified.
+- [x] Mocked smoke test: 49 tests green; `python code/main.py` with defaults produces correct CSVs in `results/`.
+- [x] Real API debug: GPT-4.1 on the poetry text — verified.
 - [x] Real API debug: Bedrock — LLaMA 4 Maverick verified working after switching to the cross-region inference profile ID (`us.meta.llama4-...`). See `CLAUDE.md`.
 
 ## Phase 3 — Review (user)

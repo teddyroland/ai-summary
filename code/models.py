@@ -43,24 +43,14 @@ MODEL_REGISTRY: dict[str, dict[str, str]] = {
     "gpt-4.1": {
         "provider": "openai",
         "model_id": "gpt-4.1-2025-04-14",
-        # `short` is an alphanumeric tag used as an infix in passage and
-        # summary IDs to disambiguate across models. Keep it short, lowercase,
-        # and version-bearing so future model upgrades don't collide.
-        "short": "gpt41",
     },
     "llama-4-maverick": {
         # Bedrock on-demand requires the cross-region inference profile ID
         # for this model, not the bare regional model ID.
         "provider": "bedrock",
         "model_id": "us.meta.llama4-maverick-17b-instruct-v1:0",
-        "short": "llama4m",
     },
 }
-
-
-def model_short(model_key: str) -> str:
-    """Return the short tag used in passage/summary IDs for a given model."""
-    return MODEL_REGISTRY[model_key]["short"]
 
 
 # ---------------------------------------------------------------------------
@@ -300,10 +290,37 @@ def _is_bedrock_transient(exc: BaseException) -> bool:
 _JSON_OBJECT_RE = re.compile(r"\{.*\}", re.DOTALL)
 
 
+# Bedrock models occasionally return the bare *value* (a string for `passage`
+# and `summary`, a list for `questions` and `requirements`) instead of the
+# expected `{"<schema_name>": value}` object. We coerce those into the expected
+# shape rather than retrying — the content is correct, only the wrapper is
+# missing. For every schema the expected key name equals schema_name itself.
+
+def _ensure_bedrock_shape(parsed: object, schema_name: str) -> dict:
+    """Coerce a parsed Bedrock JSON value into the expected single-key dict."""
+    if isinstance(parsed, dict) and schema_name in parsed:
+        return parsed
+    # Bare value matching the expected payload type: wrap it.
+    if schema_name in {"passage", "summary"} and isinstance(parsed, str):
+        return {schema_name: parsed}
+    if schema_name in {"questions", "requirements"} and isinstance(parsed, list):
+        return {schema_name: parsed}
+    raise ValueError(
+        f"Bedrock response did not match expected shape for {schema_name!r}: "
+        f"got {type(parsed).__name__}"
+    )
+
+
 def _extract_json(text: str) -> dict:
-    """Try to parse `text` as JSON, falling back to extracting a JSON object."""
+    """Try to parse `text` as JSON, falling back to extracting a JSON object.
+
+    `strict=False` tells json to accept literal control characters (raw
+    newlines, tabs) inside string values. Some Bedrock models (LLaMA in
+    particular) emit JSON with embedded newlines in long string fields,
+    which strict mode rejects.
+    """
     try:
-        return json.loads(text)
+        return json.loads(text, strict=False)
     except json.JSONDecodeError:
         # Strip common markdown code-fence wrappers.
         stripped = text.strip()
@@ -319,7 +336,7 @@ def _extract_json(text: str) -> dict:
         match = _JSON_OBJECT_RE.search(stripped)
         if not match:
             raise
-        return json.loads(match.group(0))
+        return json.loads(match.group(0), strict=False)
 
 
 def _call_bedrock(
@@ -355,10 +372,12 @@ def _call_bedrock(
         # First try with the normal system prompt.
         text = one_call(stricter=False)
         try:
-            return _extract_json(text)
-        except json.JSONDecodeError:
+            parsed = _extract_json(text)
+            return _ensure_bedrock_shape(parsed, schema_name)
+        except (json.JSONDecodeError, ValueError):
             # One self-correcting retry with a stricter instruction.
             text = one_call(stricter=True)
-            return _extract_json(text)
+            parsed = _extract_json(text)
+            return _ensure_bedrock_shape(parsed, schema_name)
 
     return _with_retries(attempt, _is_bedrock_transient)

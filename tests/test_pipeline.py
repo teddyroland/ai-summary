@@ -39,10 +39,10 @@ def fake_corpus(tmp_path, monkeypatch):
     monkeypatch.setattr(io_utils, "PLAINTEXT_DIR", plaintext)
 
     meta_rows = [
-        {"TEXT_ID": "01", "AUTHOR": "Author A", "TITLE": "Book A",
-         "GENRE": "novel", "FILENAME": "01_a.txt"},
-        {"TEXT_ID": "02", "AUTHOR": "Author B", "TITLE": "Book B",
-         "GENRE": "poetry", "FILENAME": "02_b.txt"},
+        {"text_id": "1", "author": "Author A", "title": "Book A",
+         "genre": "novel", "filename": "01_a.txt"},
+        {"text_id": "2", "author": "Author B", "title": "Book B",
+         "genre": "poetry", "filename": "02_b.txt"},
     ]
     temp_dir = tmp_path / "temp"
     return meta_rows, temp_dir
@@ -89,18 +89,18 @@ def test_passage_selection_record_count_and_ids(fake_corpus):
         temp_dir=temp_dir,
     )
 
-    # 2 texts × 2 questions = 4 passages.
+    # 2 texts × 2 requirements = 4 passages.
     assert len(passages) == 4
-    passage_ids = [p["passage_id"] for p in passages]
-    assert passage_ids == [
-        "p_01_gpt41_01", "p_01_gpt41_02",
-        "p_02_gpt41_01", "p_02_gpt41_02",
+    # passage_id is an integer counter that resets per (text, model).
+    ids_per_text = [
+        (p["text_id"], p["passage_id"]) for p in passages
     ]
+    assert ids_per_text == [("1", 1), ("1", 2), ("2", 1), ("2", 2)]
     # JSONL cache mirrors the in-memory list.
     cache = io_utils.read_jsonl(temp_dir / "gpt-4.1_passages.jsonl")
     assert len(cache) == 4
     assert cache[0]["model"] == "gpt-4.1"
-    assert cache[0]["question"].startswith("q1")
+    assert cache[0]["requirement"].startswith("q1")
     assert cache[0]["passage_text"].startswith("selected passage")
 
 
@@ -113,27 +113,30 @@ def test_passage_selection_with_multiple_models(fake_corpus):
         call_model=_make_mock_caller(),
         temp_dir=temp_dir,
     )
-    # 2 models × 2 texts × 2 questions = 8 passages.
+    # 2 models × 2 texts × 2 requirements = 8 passages.
     assert len(passages) == 8
     # Each model writes its own cache file.
     assert (temp_dir / "gpt-4.1_passages.jsonl").exists()
     assert (temp_dir / "llama-4-maverick_passages.jsonl").exists()
-    # Same text + counter but different model -> different passage_id.
+    # passage_id counter resets per (text, model): both models have
+    # passage_id=1 for their first selection on text 01.
     p01_gpt = next(p["passage_id"] for p in passages
-                   if p["model"] == "gpt-4.1" and p["text_id"] == "01"
-                   and p["passage_n"] == 1)
+                   if p["model"] == "gpt-4.1" and p["text_id"] == "1"
+                   and p["passage_id"] == 1)
     p01_llama = next(p["passage_id"] for p in passages
-                     if p["model"] == "llama-4-maverick" and p["text_id"] == "01"
-                     and p["passage_n"] == 1)
-    assert p01_gpt == "p_01_gpt41_01"
-    assert p01_llama == "p_01_llama4m_01"
+                     if p["model"] == "llama-4-maverick" and p["text_id"] == "1"
+                     and p["passage_id"] == 1)
+    assert p01_gpt == 1 and p01_llama == 1
+    # Uniqueness comes from the (text_id, model, passage_id) triple.
+    triples = {(p["text_id"], p["model"], p["passage_id"]) for p in passages}
+    assert len(triples) == 8
 
 
 # ---------------------------------------------------------------------------
 # Stage 4b and 4c
 # ---------------------------------------------------------------------------
 
-def test_scene_summaries_counts_and_id_infix(fake_corpus):
+def test_scene_summaries_counts_and_ids(fake_corpus):
     meta_rows, temp_dir = fake_corpus
     fake_call = _make_mock_caller()
     passages = pipeline.run_passage_selection(
@@ -143,31 +146,34 @@ def test_scene_summaries_counts_and_id_infix(fake_corpus):
         call_model=fake_call,
         temp_dir=temp_dir,
     )
-    scene = pipeline.run_scene_summaries(
+    scene = pipeline.run_summaries(
+        kind="scene",
         passages=passages,
         meta_rows=meta_rows,
         model_keys=["gpt-4.1"],
-        scene_n=2,
+        summary_n=2,
         call_model=fake_call,
         temp_dir=temp_dir,
     )
     # 4 passages × 2 requirements = 8 scene summaries.
     assert len(scene) == 8
-    # IDs should carry the "scene" infix and the model short tag.
-    assert all("scene" in s["summary_id"] for s in scene)
-    assert all("gpt41" in s["summary_id"] for s in scene)
-    # IDs should be unique and well-formed.
-    assert len({s["summary_id"] for s in scene}) == 8
-    # First few IDs match the expected pattern.
-    expected_first = [
-        "s_01_01_gpt41_scene_01", "s_01_01_gpt41_scene_02",
-        "s_01_02_gpt41_scene_01", "s_01_02_gpt41_scene_02",
-    ]
-    actual_first = [s["summary_id"] for s in scene[:4]]
-    assert actual_first == expected_first
+    # summary_type marks every record as "scene".
+    assert all(s["summary_type"] == "scene" for s in scene)
+    # summary_id counter resets per (text, model, passage_id, summary_type).
+    # First passage of text 01 has summary_ids [1, 2]; same for second passage.
+    first_passage_ids = [s["summary_id"] for s in scene
+                          if s["text_id"] == "1" and s["passage_id"] == 1]
+    assert first_passage_ids == [1, 2]
+    second_passage_ids = [s["summary_id"] for s in scene
+                           if s["text_id"] == "1" and s["passage_id"] == 2]
+    assert second_passage_ids == [1, 2]
+    # Uniqueness: (text_id, model, passage_id, summary_type, summary_id).
+    keys = {(s["text_id"], s["model"], s["passage_id"], s["summary_type"], s["summary_id"])
+            for s in scene}
+    assert len(keys) == 8
 
 
-def test_global_summaries_use_global_infix(fake_corpus):
+def test_global_summaries_are_marked_global(fake_corpus):
     meta_rows, temp_dir = fake_corpus
     fake_call = _make_mock_caller()
     passages = pipeline.run_passage_selection(
@@ -177,17 +183,21 @@ def test_global_summaries_use_global_infix(fake_corpus):
         call_model=fake_call,
         temp_dir=temp_dir,
     )
-    global_summaries = pipeline.run_global_summaries(
+    global_summaries = pipeline.run_summaries(
+        kind="global",
         passages=passages,
         meta_rows=meta_rows,
         model_keys=["gpt-4.1"],
-        global_n=2,
+        summary_n=2,
         call_model=fake_call,
         temp_dir=temp_dir,
     )
     # 1 model × 2 texts × 1 passage × 2 requirements = 4 global summaries.
     assert len(global_summaries) == 4
-    assert all("global" in s["summary_id"] for s in global_summaries)
+    assert all(s["summary_type"] == "global" for s in global_summaries)
+    # summary_id counter restarts at 1 for each passage.
+    text1_ids = [s["summary_id"] for s in global_summaries if s["text_id"] == "1"]
+    assert text1_ids == [1, 2]
 
 
 def test_summary_stage_only_summarizes_own_model_passages(fake_corpus):
@@ -203,11 +213,12 @@ def test_summary_stage_only_summarizes_own_model_passages(fake_corpus):
     )
     # Run scene summaries with only one of the two models. The other model's
     # passages should be skipped.
-    scene = pipeline.run_scene_summaries(
+    scene = pipeline.run_summaries(
+        kind="scene",
         passages=passages,
         meta_rows=meta_rows,
         model_keys=["gpt-4.1"],
-        scene_n=1,
+        summary_n=1,
         call_model=fake_call,
         temp_dir=temp_dir,
     )
@@ -230,8 +241,7 @@ def test_passage_record_has_expected_fields(fake_corpus):
         temp_dir=temp_dir,
     )
     expected_fields = {
-        "passage_id", "passage_n", "text_id", "title", "author",
-        "model", "question", "passage_text",
+        "text_id", "model", "passage_id", "requirement", "passage_text",
     }
     assert set(passages[0].keys()) == expected_fields
 
@@ -243,13 +253,15 @@ def test_summary_record_has_expected_fields(fake_corpus):
         meta_rows=meta_rows, model_keys=["gpt-4.1"], selection_n=1,
         call_model=fake_call, temp_dir=temp_dir,
     )
-    scene = pipeline.run_scene_summaries(
-        passages=passages, meta_rows=meta_rows, model_keys=["gpt-4.1"],
-        scene_n=1, call_model=fake_call, temp_dir=temp_dir,
+    scene = pipeline.run_summaries(
+        kind="scene", passages=passages, meta_rows=meta_rows,
+        model_keys=["gpt-4.1"], summary_n=1,
+        call_model=fake_call, temp_dir=temp_dir,
     )
     expected_fields = {
-        "summary_id", "passage_id", "text_id", "title", "author",
-        "model", "requirement", "summary_text",
+        "text_id", "model", "passage_id",
+        "summary_type", "summary_id",
+        "requirement", "summary_text",
     }
     assert set(scene[0].keys()) == expected_fields
 

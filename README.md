@@ -18,7 +18,7 @@ The pipeline supports multiple language models via a single abstraction. The cur
 
 The corpus is not redistributed in this repository — populate `data/` locally before running the pipeline. See [`data/README.md`](data/README.md) for the expected file layout and `meta.csv` schema.
 
-- `data/meta.csv` — one row per text, with columns `TEXT_ID, AUTHOR, TITLE, GENRE, FILENAME`.
+- `data/meta.csv` — one row per text, with columns `text_id, author, title, genre, filename`.
 - `data/plaintext/*.txt` — one plaintext file per text. Books of poetry are stored as a single file with individual poems separated by asterisks.
 
 ## Project layout
@@ -59,7 +59,7 @@ Defaults are `--selection 1 --scene 1 --global 1 --models gpt-4.1`, useful for q
 - `results/scene_summaries.csv` — every scene-setting summary.
 - `results/global_summaries.csv` — every global-theorizing summary.
 
-All CSVs include a `model` column and are sorted by `(model, passage_id, summary_id)`. The `temp/` cache is append-only across runs and not cleared automatically — see `TODO.md` for the cleanup step between debugging and full-dataset runs.
+Passages sort by `(model, text_id, passage_id)`; summaries sort by `(model, text_id, passage_id, summary_id)`. `passage_id` and `summary_id` are 1-based integers whose counters reset within `(text_id, model)` and `(text_id, model, passage_id, summary_type)` respectively — see `CLAUDE.md` for the full schema. The `temp/` cache is append-only across runs and not cleared automatically — see `TODO.md` for the cleanup step between debugging and full-dataset runs.
 
 ## Running the tests
 

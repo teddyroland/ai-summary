@@ -49,7 +49,7 @@ def test_global_requirements_prompt_uses_global_examples():
 
 def test_passage_prompt_includes_question_and_text():
     out = prompts.render_passage_prompt(
-        author="A", title="T", question="Q?", text="full text",
+        author="A", title="T", requirement="Q?", text="full text",
     )
     assert "Q?" in out
     assert "full text" in out
@@ -59,7 +59,7 @@ def test_passage_prompt_includes_question_and_text():
 def test_passage_prompt_forbids_commentary():
     """The strict-excerpt instruction added in Phase 2 must be present."""
     out = prompts.render_passage_prompt(
-        author="A", title="T", question="Q?", text="full text",
+        author="A", title="T", requirement="Q?", text="full text",
     )
     assert "verbatim" in out.lower()
     assert "do not add commentary" in out.lower()

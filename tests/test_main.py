@@ -27,9 +27,9 @@ def fake_workspace(tmp_path, monkeypatch):
     )
     meta_path = data / "meta.csv"
     meta_path.write_text(
-        "TEXT_ID,AUTHOR,TITLE,GENRE,FILENAME\n"
-        "01,Author A,Book A,novel,01_a.txt\n"
-        "02,Author B,Book B,poetry,02_b.txt\n",
+        "text_id,author,title,genre,filename\n"
+        "1,Author A,Book A,novel,01_a.txt\n"
+        "2,Author B,Book B,poetry,02_b.txt\n",
         encoding="utf-8",
     )
 
@@ -79,29 +79,37 @@ def test_run_produces_three_csvs_with_correct_shapes(fake_workspace):
     # 4 passages × 2 global reqs = 8 global summaries.
     assert counts == {"passages": 4, "scene": 8, "global": 8}
 
-    # Verify the passages CSV columns and one row.
+    # Verify the passages CSV columns and rows.
     with (fake_workspace["results_dir"] / "passages.csv").open() as f:
         reader = csv.DictReader(f)
         rows = list(reader)
     assert reader.fieldnames == main.PASSAGE_CSV_COLUMNS
     assert len(rows) == 4
     assert rows[0]["model"] == "gpt-4.1"
-    # IDs sort correctly (lexicographic across the zero-padded passage_id).
-    assert [r["passage_id"] for r in rows] == [
-        "p_01_gpt41_01", "p_01_gpt41_02", "p_02_gpt41_01", "p_02_gpt41_02"
+    # passage_id counter resets per (text, model).
+    assert [(r["text_id"], r["passage_id"]) for r in rows] == [
+        ("1", "1"), ("1", "2"), ("2", "1"), ("2", "2"),
     ]
 
-    # Verify scene_summaries CSV.
+    # Verify scene_summaries CSV — summary_type marks each row.
     with (fake_workspace["results_dir"] / "scene_summaries.csv").open() as f:
-        scene_rows = list(csv.DictReader(f))
+        scene_reader = csv.DictReader(f)
+        scene_rows = list(scene_reader)
+    assert scene_reader.fieldnames == main.SUMMARY_CSV_COLUMNS
     assert len(scene_rows) == 8
-    assert all("scene" in r["summary_id"] for r in scene_rows)
+    assert all(r["summary_type"] == "scene" for r in scene_rows)
+    # summary_id is "1" or "2" within each (text, passage_id) group.
+    first_passage_summary_ids = [r["summary_id"] for r in scene_rows
+                                  if r["text_id"] == "1" and r["passage_id"] == "1"]
+    assert first_passage_summary_ids == ["1", "2"]
 
     # Verify global_summaries CSV.
     with (fake_workspace["results_dir"] / "global_summaries.csv").open() as f:
-        global_rows = list(csv.DictReader(f))
+        global_reader = csv.DictReader(f)
+        global_rows = list(global_reader)
+    assert global_reader.fieldnames == main.SUMMARY_CSV_COLUMNS
     assert len(global_rows) == 8
-    assert all("global" in r["summary_id"] for r in global_rows)
+    assert all(r["summary_type"] == "global" for r in global_rows)
 
 
 def test_parse_args_defaults():

@@ -32,7 +32,7 @@ SYSTEM_PROMPT = (
 # Stage 4a — Passage selection
 # ---------------------------------------------------------------------------
 
-QUESTIONS_PROMPT = """Please generate a list of high-level interpretive questions for the text below.
+QUESTIONS_PROMPT = """Please generate a list of high-level interpretive questions for the text below. The questions should identify what the given text can teach us, in terms that are historical, ethical, or aesthetic. The questions should be general enough that they can be posed to other texts as well.
 
 Author: [[ AUTHOR ]]
 
@@ -42,8 +42,8 @@ Complete Text: [[ TEXT ]]
 
 Here are some examples of high-level interpretive questions posed to different texts:
 
-1. What distinct categories of events occur in the text?
-2. How did the author feel while writing the text?
+1. What is the relationship between our interior lives and exterior events?
+2. How did the author feel while writing?
 3. How do the words sound when read aloud?
 4. What is the good life?
 5. What is marriage as an institution?
@@ -55,17 +55,17 @@ Please generate a list of [[ SELECTION_NUMBER ]] high-level interpretive questio
 Questions: """
 
 
-PASSAGE_PROMPT = """Select a single poem or a 100-200 word passage from the following text, which addresses the interpretive question.
+PASSAGE_PROMPT = """Select a single poem or a 100-200 word passage from the following text, which best addresses the requirement.
 
 Author: [[ AUTHOR ]]
 
 Title: [[ TITLE ]]
 
-Question: [[ QUESTION ]]
+Requirement: [[ REQUIREMENT ]]
 
 Complete Text: [[ TEXT ]]
 
-Select a single poem or a 50-200 word passage from the following text, that best addresses the interpretive question. Return ONLY a verbatim excerpt — a literal, consecutive copy of words taken directly from the source. Do not add commentary, analysis, framing, headings, or explanation; do not paraphrase, summarize, or modernize the text.
+Select a single poem or a 100-200 word passage from the above text, which best addresses the requirement. Return only a verbatim excerpt: a literal, consecutive copy of words taken directly from the source. Do not add commentary, analysis, framing, headings, or explanation. Do not paraphrase, summarize, or modernize the text.
 
 Poem/Passage: """
 
@@ -83,7 +83,7 @@ PASSAGE_VERBATIM_RETRY_INSTRUCTION = (
 # Stage 4b — Scene-setting summaries
 # ---------------------------------------------------------------------------
 
-SCENE_REQUIREMENTS_PROMPT = """Please generate a list of specific summary requirements for the passage below.
+SCENE_REQUIREMENTS_PROMPT = """Please generate a list of specific summary requirements for the passage below. The requirements should identify the most important features of the passage. The requirements should be general enough that they can be posed to other texts as well.
 
 Author: [[ AUTHOR ]]
 
@@ -112,7 +112,7 @@ Requirements: """
 # Stage 4c — Global-theorizing summaries
 # ---------------------------------------------------------------------------
 
-GLOBAL_REQUIREMENTS_PROMPT = """Please generate a list of specific summary requirements for the passage below.
+GLOBAL_REQUIREMENTS_PROMPT = """Please generate a list of specific summary requirements for the passage below. The requirements should identify what the passage can teach us, in terms of its author's body of work, its literary genre, or its historical background. The requirements should be general enough that they can be posed to other texts as well.
 
 Author: [[ AUTHOR ]]
 
@@ -122,14 +122,14 @@ Passage: [[ PASSAGE ]]
 
 Here are some requirement examples based on different passages:
 
-1. Summarize how art changed in the modern era.
-2. Summarize the worldview of pastoral poetry.
-3. Summarize how heterosexual courtship be slowed down, thwarted, and avoided in Jane Austen's novels.
-4. Summarize how aestheticism work against heterosexuality in Jane Austen's novels.
-5. Summarize how artworks, from roughly 1800 to the present, represent anxiety as a masculine emotion.
-6. Summarize how artworks represent emotions by assimilating the theories of nineteenth- and twentieth-century philosophers, psychoanalysts, and cultural critics.
-7. Summarize how postcolonial modernist artworks practice diffusionism, spreading modernist innovations to the periphery.
-8. Summarize how postcolonial modernist artworks practice resistance, struggling against modernism as a colonial imposition.
+1. Summarize how the poem claims art changed in the modern era.
+2. Summarize the the sonnet expresses worldview of pastoral poetry.
+3. Summarize how the passage dramatizes ways in which heterosexual courtship be slowed down, thwarted, and avoided in Jane Austen's novels.
+4. Summarize how the passage shows how aestheticism works against heterosexuality in Jane Austen's novels.
+5. Summarize how the passage, as an examplary artwork of the past two centuries, represents anxiety as a masculine emotion.
+6. Summarize how the film represents emotions by assimilating the theories of nineteenth- and twentieth-century philosophers, psychoanalysts, and cultural critics.
+7. Summarize how the poem practices the diffusionism of postcolonial modernism, spreading modernist innovations to the periphery.
+8. Summarize how the poem's title practices the resistance of postcolonial modernism, struggling against modernism as a colonial imposition.
 
 Please generate a list of [[ GLOBAL_NUMBER ]] specific summary requirements for the text above, in JSON format.
 
@@ -140,7 +140,7 @@ Requirements: """
 # Shared item prompt for both scene-setting and global-theorizing summaries
 # ---------------------------------------------------------------------------
 
-SUMMARY_PROMPT = """Summarize the following passage based on the specific requirement. If necessary, use the complete text from which the passage is drawn for additional context.
+SUMMARY_PROMPT = """Summarize the passage below, based on the stated requirement.
 
 Author: [[ AUTHOR ]]
 
@@ -152,7 +152,7 @@ Requirement: [[ REQUIREMENT ]]
 
 Complete Text: [[ TEXT ]]
 
-Summarize the passage above based on the specific requirement. If necessary, use the complete text from which the passage is drawn for additional context. Output the summary into JSON format.
+Summarize the passage above, based on the stated requirement. If necessary, use the complete text from which the passage is drawn for additional information. Output the summary into JSON format.
 
 Summary: """
 
@@ -187,13 +187,13 @@ def render_questions_prompt(author: str, title: str, text: str, selection_n: int
     )
 
 
-def render_passage_prompt(author: str, title: str, question: str, text: str) -> str:
+def render_passage_prompt(author: str, title: str, requirement: str, text: str) -> str:
     return _fill(
         PASSAGE_PROMPT,
         {
             "AUTHOR": author,
             "TITLE": title,
-            "QUESTION": question,
+            "REQUIREMENT": requirement,
             "TEXT": text,
         },
     )

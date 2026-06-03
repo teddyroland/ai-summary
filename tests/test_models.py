@@ -17,19 +17,6 @@ def test_registry_has_expected_keys():
     assert set(models.MODEL_REGISTRY) == {"gpt-4.1", "llama-4-maverick"}
 
 
-def test_registry_has_short_tags():
-    # Every registered model must define a `short` tag used in passage and
-    # summary IDs.
-    for key in models.MODEL_REGISTRY:
-        assert "short" in models.MODEL_REGISTRY[key]
-        assert models.MODEL_REGISTRY[key]["short"]
-
-
-def test_model_short_helper():
-    assert models.model_short("gpt-4.1") == "gpt41"
-    assert models.model_short("llama-4-maverick") == "llama4m"
-
-
 def test_call_model_rejects_unknown_key():
     with pytest.raises(ValueError):
         models.call_model("nope", "sys", "user", "questions")
@@ -186,6 +173,47 @@ def test_call_bedrock_retries_with_stricter_prompt_on_bad_json(monkeypatch):
     second_kwargs = fake_client.converse.call_args_list[1][1]
     stricter_text = second_kwargs["system"][0]["text"]
     assert "ONLY the JSON object" in stricter_text
+
+
+def test_call_bedrock_wraps_bare_string_for_passage(monkeypatch):
+    """LLaMA sometimes returns a bare JSON string instead of {"passage": "..."}."""
+    fake_client = MagicMock()
+    fake_client.converse.return_value = _bedrock_converse_response(
+        json.dumps("just the passage text without the wrapper")
+    )
+    monkeypatch.setattr(models, "_get_bedrock_client", lambda: fake_client)
+
+    result = models.call_model("llama-4-maverick", "sys", "user", "passage")
+
+    assert result == {"passage": "just the passage text without the wrapper"}
+    # One call: shape coercion shouldn't trigger a retry.
+    assert fake_client.converse.call_count == 1
+
+
+def test_call_bedrock_wraps_bare_list_for_questions(monkeypatch):
+    """A bare list also gets wrapped to match the questions schema."""
+    fake_client = MagicMock()
+    fake_client.converse.return_value = _bedrock_converse_response(
+        json.dumps(["q1", "q2", "q3"])
+    )
+    monkeypatch.setattr(models, "_get_bedrock_client", lambda: fake_client)
+
+    result = models.call_model("llama-4-maverick", "sys", "user", "questions")
+
+    assert result == {"questions": ["q1", "q2", "q3"]}
+
+
+def test_call_bedrock_accepts_control_chars_in_strings(monkeypatch):
+    """LLaMA emits literal newlines inside string values; strict=False handles that."""
+    # Raw text with a literal newline inside the string value — invalid in strict JSON.
+    raw = '{"summary": "line one\nline two"}'
+    fake_client = MagicMock()
+    fake_client.converse.return_value = _bedrock_converse_response(raw)
+    monkeypatch.setattr(models, "_get_bedrock_client", lambda: fake_client)
+
+    result = models.call_model("llama-4-maverick", "sys", "user", "summary")
+
+    assert result == {"summary": "line one\nline two"}
 
 
 # ---------------------------------------------------------------------------

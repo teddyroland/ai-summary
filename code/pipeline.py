@@ -26,10 +26,14 @@ caches into the final CSVs in results/.
 from collections.abc import Callable
 from pathlib import Path
 
-import ids
 import io_utils
 import models
 import prompts
+
+# Summary types we support (used as the `summary_type` column value and to pick
+# the correct Stage-1 prompt). Centralized so a typo in pipeline.py is caught
+# early.
+SUMMARY_TYPES = ("scene", "global")
 
 
 # Type aliases for readability.
@@ -58,19 +62,17 @@ def _resolve_caller(call_model: ModelCaller | None) -> ModelCaller:
 # back. We don't raise on a second failure — long runs would break — but we
 # log a warning so the user can inspect the offending record afterwards.
 
-def _normalize_for_verbatim_check(s: str) -> str:
-    """Collapse runs of whitespace to single spaces and lowercase.
-
-    This tolerates trivial reformatting (line breaks, repeated spaces, case
-    differences) while still catching genuine commentary.
-    """
-    return " ".join(s.split()).lower()
-
-
 def is_verbatim_excerpt(excerpt: str, source: str) -> bool:
     """True if `excerpt` appears as a substring of `source` after whitespace
-    and case normalization."""
-    return _normalize_for_verbatim_check(excerpt) in _normalize_for_verbatim_check(source)
+    and case normalization.
+
+    Normalizing collapses runs of whitespace to single spaces and lowercases
+    both inputs. This tolerates trivial reformatting (line breaks, repeated
+    spaces, case differences) while still catching genuine commentary.
+    """
+    def normalize(s: str) -> str:
+        return " ".join(s.split()).lower()
+    return normalize(excerpt) in normalize(source)
 
 
 def _select_passage_with_verbatim_check(
@@ -111,16 +113,16 @@ def _select_passage_with_verbatim_check(
 
 
 def build_meta_index(meta_rows: list[dict]) -> MetaIndex:
-    """Map TEXT_ID -> {"row": meta_row, "text": loaded plaintext}.
+    """Map text_id -> {"row": meta_row, "text": loaded plaintext}.
 
     Texts are loaded once and reused across all stages and models so we don't
     re-read big files for every call.
     """
     index: MetaIndex = {}
     for row in meta_rows:
-        index[row["TEXT_ID"]] = {
+        index[row["text_id"]] = {
             "row": row,
-            "text": io_utils.load_text(row["FILENAME"]),
+            "text": io_utils.load_text(row["filename"]),
         }
     return index
 
@@ -148,49 +150,48 @@ def run_passage_selection(
     passages: list[dict] = []
 
     for model_key in model_keys:
-        m_short = models.model_short(model_key)
         cache_path = temp_dir / f"{model_key}_passages.jsonl"
         for text_id, entry in meta_index.items():
             row = entry["row"]
             text = entry["text"]
 
-            # Prompt 1 — interpretive questions.
+            # Prompt 1 — generate the list of interpretive requirements.
             questions_prompt = prompts.render_questions_prompt(
-                author=row["AUTHOR"],
-                title=row["TITLE"],
+                author=row["author"],
+                title=row["title"],
                 text=text,
                 selection_n=selection_n,
             )
             questions_response = call_model(
                 model_key, prompts.SYSTEM_PROMPT, questions_prompt, "questions"
             )
-            questions = questions_response["questions"]
+            # The questions schema still returns a "questions" field. We treat
+            # each entry as a "requirement" in the downstream record and CSV.
+            requirements = questions_response["questions"]
 
-            # Prompt 2 — one passage per question, validated as a verbatim
-            # substring of the source. See _select_passage_with_verbatim_check.
-            for i, question in enumerate(questions, start=1):
+            # Prompt 2 — one passage per requirement, validated as a verbatim
+            # substring of the source. passage_id is a 1-based counter that
+            # resets per (text, model); uniqueness is (text_id, model,
+            # passage_id).
+            for i, requirement in enumerate(requirements, start=1):
                 passage_prompt = prompts.render_passage_prompt(
-                    author=row["AUTHOR"],
-                    title=row["TITLE"],
-                    question=question,
+                    author=row["author"],
+                    title=row["title"],
+                    requirement=requirement,
                     text=text,
                 )
-                pid = ids.passage_id(text_id, m_short, i)
                 passage_text = _select_passage_with_verbatim_check(
                     model_key=model_key,
                     user_prompt=passage_prompt,
                     source_text=text,
                     call_model=call_model,
-                    passage_label=pid,
+                    passage_label=f"{text_id}/{model_key}/p{i}",
                 )
                 record = {
-                    "passage_id": pid,
-                    "passage_n": i,
                     "text_id": text_id,
-                    "title": row["TITLE"],
-                    "author": row["AUTHOR"],
                     "model": model_key,
-                    "question": question,
+                    "passage_id": i,
+                    "requirement": requirement,
                     "passage_text": passage_text,
                 }
                 io_utils.append_jsonl(cache_path, record)
@@ -203,32 +204,41 @@ def run_passage_selection(
 # Stages 4b and 4c — Scene-setting and global-theorizing summaries
 # ---------------------------------------------------------------------------
 
-def _run_summary_stage(
+def run_summaries(
     kind: str,
     passages: list[dict],
     meta_rows: list[dict],
     model_keys: list[str],
-    n: int,
-    call_model: ModelCaller,
-    temp_dir: Path,
+    summary_n: int,
+    *,
+    call_model: ModelCaller | None = None,
+    temp_dir: Path | None = None,
 ) -> list[dict]:
-    """Shared loop for scene-setting and global-theorizing summaries.
+    """Generate scene-setting or global-theorizing summaries for each passage.
 
-    The two stages differ only in which Prompt 1 template they use; Prompt 2
-    is identical (prompts.render_summary_prompt) for both.
+    The two summary stages share the same iteration structure and Prompt 2
+    template (`prompts.render_summary_prompt`); they differ only in which
+    Prompt 1 template they use and in the `summary_type` column written to the
+    record. `kind` is "scene" or "global".
+
+    summary_id is a 1-based counter that resets per
+    (text_id, model, passage_id, summary_type). Uniqueness within a row is
+    (text_id, model, passage_id, summary_type, summary_id).
     """
-    if kind == "scene":
-        render_requirements = prompts.render_scene_requirements_prompt
-    elif kind == "global":
-        render_requirements = prompts.render_global_requirements_prompt
-    else:
-        raise ValueError(f"kind must be 'scene' or 'global', got {kind!r}")
+    if kind not in SUMMARY_TYPES:
+        raise ValueError(f"kind must be one of {SUMMARY_TYPES}, got {kind!r}")
+    call_model = _resolve_caller(call_model)
+    if temp_dir is None:
+        temp_dir = io_utils.TEMP_DIR
+    render_requirements = (
+        prompts.render_scene_requirements_prompt if kind == "scene"
+        else prompts.render_global_requirements_prompt
+    )
 
     meta_index = build_meta_index(meta_rows)
     summaries: list[dict] = []
 
     for model_key in model_keys:
-        m_short = models.model_short(model_key)
         cache_path = temp_dir / f"{model_key}_{kind}.jsonl"
         # Only summarize passages that this model selected.
         own_passages = [p for p in passages if p["model"] == model_key]
@@ -240,7 +250,7 @@ def _run_summary_stage(
 
             # Prompt 1 — requirements list.
             req_prompt = render_requirements(
-                row["AUTHOR"], row["TITLE"], passage["passage_text"], n
+                row["author"], row["title"], passage["passage_text"], summary_n
             )
             req_response = call_model(
                 model_key, prompts.SYSTEM_PROMPT, req_prompt, "requirements"
@@ -250,8 +260,8 @@ def _run_summary_stage(
             # Prompt 2 — one summary per requirement (shared template).
             for j, requirement in enumerate(requirements, start=1):
                 summary_prompt = prompts.render_summary_prompt(
-                    author=row["AUTHOR"],
-                    title=row["TITLE"],
+                    author=row["author"],
+                    title=row["title"],
                     passage=passage["passage_text"],
                     requirement=requirement,
                     text=text,
@@ -260,14 +270,11 @@ def _run_summary_stage(
                     model_key, prompts.SYSTEM_PROMPT, summary_prompt, "summary"
                 )
                 record = {
-                    "summary_id": ids.summary_id(
-                        text_id, passage["passage_n"], m_short, kind, j
-                    ),
-                    "passage_id": passage["passage_id"],
                     "text_id": text_id,
-                    "title": row["TITLE"],
-                    "author": row["AUTHOR"],
                     "model": model_key,
+                    "passage_id": passage["passage_id"],
+                    "summary_type": kind,
+                    "summary_id": j,
                     "requirement": requirement,
                     "summary_text": summary_response["summary"],
                 }
@@ -275,37 +282,3 @@ def _run_summary_stage(
                 summaries.append(record)
 
     return summaries
-
-
-def run_scene_summaries(
-    passages: list[dict],
-    meta_rows: list[dict],
-    model_keys: list[str],
-    scene_n: int,
-    *,
-    call_model: ModelCaller | None = None,
-    temp_dir: Path | None = None,
-) -> list[dict]:
-    call_model = _resolve_caller(call_model)
-    if temp_dir is None:
-        temp_dir = io_utils.TEMP_DIR
-    return _run_summary_stage(
-        "scene", passages, meta_rows, model_keys, scene_n, call_model, temp_dir
-    )
-
-
-def run_global_summaries(
-    passages: list[dict],
-    meta_rows: list[dict],
-    model_keys: list[str],
-    global_n: int,
-    *,
-    call_model: ModelCaller | None = None,
-    temp_dir: Path | None = None,
-) -> list[dict]:
-    call_model = _resolve_caller(call_model)
-    if temp_dir is None:
-        temp_dir = io_utils.TEMP_DIR
-    return _run_summary_stage(
-        "global", passages, meta_rows, model_keys, global_n, call_model, temp_dir
-    )

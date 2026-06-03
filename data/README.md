@@ -7,14 +7,14 @@ The corpus is not tracked in this repository (see `.gitignore`). To run the pipe
 
    | Column | Description |
    |---|---|
-   | `TEXT_ID` | Zero-padded numeric ID (e.g. `01`, `02`). Used as a prefix in passage and summary IDs. |
-   | `AUTHOR` | Author name, as it should appear in the prompts. |
-   | `TITLE` | Title of the work. |
-   | `GENRE` | Free-form genre tag (e.g. `novel`, `poetry`). |
-   | `FILENAME` | Filename within `data/plaintext/`. |
+   | `text_id` | Integer ID starting at 1. Appears in the `text_id` column of every result CSV. |
+   | `author` | Author name, as it should appear in the prompts. |
+   | `title` | Title of the work. |
+   | `genre` | Free-form genre tag (e.g. `novel`, `poetry`). |
+   | `filename` | Filename within `data/plaintext/`. |
 
    Example:
    ```
-   TEXT_ID,AUTHOR,TITLE,GENRE,FILENAME
-   01,Author Name,Book Title,novel,01_author_book.txt
+   text_id,author,title,genre,filename
+   1,Author Name,Book Title,novel,1_author_book.txt
    ```
