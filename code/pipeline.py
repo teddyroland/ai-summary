@@ -51,16 +51,20 @@ def _resolve_caller(call_model: ModelCaller | None) -> ModelCaller:
 
 
 # ---------------------------------------------------------------------------
-# Verbatim check for selected passages
+# Quality checks for selected passages
 # ---------------------------------------------------------------------------
 #
-# Stage 4a asks the model to "select a poem or passage" from the source. In
-# practice models sometimes add editorial commentary alongside the excerpt
-# (e.g. "This poem exemplifies..."). To catch that, we normalize whitespace
-# and check whether the response is a substring of the source. If it isn't,
-# we re-prompt once with a stricter instruction and accept whatever comes
-# back. We don't raise on a second failure — long runs would break — but we
-# log a warning so the user can inspect the offending record afterwards.
+# Stage 4a asks the model to "select a poem or passage" of 100-300 words from
+# the source. In practice models sometimes add editorial commentary or write
+# a much longer excerpt than the prompt asks for. We check the response for
+# two things — that it is a verbatim substring of the source, and that it is
+# in the requested word range — then re-prompt once if either fails. We don't
+# raise on a second failure; long runs should not break on one uncooperative
+# response. Both failures are logged so the operator can find the rows later.
+
+PASSAGE_MIN_WORDS = 100
+PASSAGE_MAX_WORDS = 300
+
 
 def is_verbatim_excerpt(excerpt: str, source: str) -> bool:
     """True if `excerpt` appears as a substring of `source` after whitespace
@@ -75,39 +79,82 @@ def is_verbatim_excerpt(excerpt: str, source: str) -> bool:
     return normalize(excerpt) in normalize(source)
 
 
-def _select_passage_with_verbatim_check(
+def count_words(text: str) -> int:
+    """Split on whitespace and return the number of tokens.
+
+    Naive but consistent with how a human would count words in a passage.
+    """
+    return len(text.split())
+
+
+def is_in_word_range(text: str, min_words: int, max_words: int) -> bool:
+    """True if `text` has between `min_words` and `max_words` words inclusive."""
+    n = count_words(text)
+    return min_words <= n <= max_words
+
+
+def _passage_failures(passage: str, source: str) -> list[str]:
+    """Return labels for any quality checks that the passage fails.
+
+    Each label is one of: "verbatim", or "length:<actual_count>".
+    Empty list means the passage passes every check.
+    """
+    failures: list[str] = []
+    if not is_verbatim_excerpt(passage, source):
+        failures.append("verbatim")
+    n = count_words(passage)
+    if not (PASSAGE_MIN_WORDS <= n <= PASSAGE_MAX_WORDS):
+        failures.append(f"length:{n}")
+    return failures
+
+
+def _build_retry_instruction(failures: list[str]) -> str:
+    """Assemble the follow-up instruction for whichever checks failed."""
+    parts: list[str] = []
+    if "verbatim" in failures:
+        parts.append(prompts.PASSAGE_VERBATIM_RETRY_INSTRUCTION)
+    for f in failures:
+        if f.startswith("length:"):
+            actual = int(f.split(":", 1)[1])
+            parts.append(prompts.passage_length_retry_instruction(actual))
+    return "".join(parts)
+
+
+def _select_validated_passage(
     model_key: str,
     user_prompt: str,
     source_text: str,
     call_model: ModelCaller,
     passage_label: str,
 ) -> str:
-    """Call the model for a passage; if it isn't verbatim, retry once.
+    """Call the model for a passage; if it fails any quality check, retry once.
 
-    `passage_label` is used only in the warning message printed on a second
-    failure so the operator can match the warning to a CSV row.
+    Both verbatim and word-count checks run together; the retry instruction
+    addresses whichever checks failed. `passage_label` is used only in the
+    warning messages so the operator can match the warning to a CSV row.
     """
     response = call_model(
         model_key, prompts.SYSTEM_PROMPT, user_prompt, "passage"
     )
     passage_text = response["passage"]
 
-    if is_verbatim_excerpt(passage_text, source_text):
+    failures = _passage_failures(passage_text, source_text)
+    if not failures:
         return passage_text
 
-    # Re-prompt once with the stricter follow-up instruction.
-    print(f"  [verbatim check] {passage_label}: re-prompting for a strict excerpt")
-    retry_prompt = user_prompt + prompts.PASSAGE_VERBATIM_RETRY_INSTRUCTION
+    # Re-prompt once with the appropriate stricter follow-up.
+    print(f"  [passage check] {passage_label}: re-prompting (failed: {failures})")
+    retry_prompt = user_prompt + _build_retry_instruction(failures)
     response = call_model(
         model_key, prompts.SYSTEM_PROMPT, retry_prompt, "passage"
     )
     passage_text = response["passage"]
 
-    if not is_verbatim_excerpt(passage_text, source_text):
-        # Second failure: accept the response but warn so it can be inspected.
+    failures = _passage_failures(passage_text, source_text)
+    if failures:
         print(
-            f"  [verbatim check] {passage_label}: re-prompt still not verbatim; "
-            f"accepting response anyway"
+            f"  [passage check] {passage_label}: re-prompt still failing "
+            f"({failures}); accepting response anyway"
         )
     return passage_text
 
@@ -180,7 +227,7 @@ def run_passage_selection(
                     requirement=requirement,
                     text=text,
                 )
-                passage_text = _select_passage_with_verbatim_check(
+                passage_text = _select_validated_passage(
                     model_key=model_key,
                     user_prompt=passage_prompt,
                     source_text=text,

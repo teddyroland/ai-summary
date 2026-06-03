@@ -72,14 +72,20 @@ This lets us iterate during Phase 2 debugging without losing earlier records.
 
 Between Phase 2 (prototype) and Phase 4 (full run), the user manually clears `temp/` (`rm temp/*.jsonl`) so the production run is clean. See `TODO.md`.
 
-## Passage selection: verbatim check
+## Passage selection: quality checks
 
-Stage 4a (passage selection) is the only place where the model is supposed to copy from the source. Two safeguards reduce the chance of editorial commentary leaking into the `passage` field:
+Stage 4a (passage selection) is the only place where the model is supposed to copy from the source, and the only place we ask for a specific length. Two safeguards run together after every passage response:
 
-1. **Stricter prompt language.** `PASSAGE_PROMPT` ends with: *"Return ONLY a verbatim excerpt — a literal, consecutive copy of words taken directly from the source. Do not add commentary, analysis, framing, headings, or explanation."* This is the closest instruction to where the model generates, which is where LLMs attend most.
-2. **Substring validation with one re-prompt.** After each passage response, `pipeline._select_passage_with_verbatim_check()` normalizes whitespace and case on both the response and the source, then tests whether the response is a substring. If not, it appends `PASSAGE_VERBATIM_RETRY_INSTRUCTION` to the prompt and re-calls once. If the second response also fails, the pipeline accepts it but prints a warning to stdout (no exception — long runs should not break on a single uncooperative model). Operators can grep the run log for `[verbatim check]` to find rows that failed both attempts.
+1. **Verbatim substring check.** `pipeline.is_verbatim_excerpt` normalizes whitespace and case on both response and source, then tests whether the response is a substring. Catches editorial commentary ("This poem exemplifies…") because commentary won't be in the source.
+2. **Word-count check.** `pipeline.is_in_word_range` requires `PASSAGE_MIN_WORDS=100` ≤ words ≤ `PASSAGE_MAX_WORDS=300`. The prompt asks for "a 100-300 word passage"; this enforces it. The upper bound is generous enough to accommodate novel scenes, which often run a few hundred words.
 
-Normalization is intentionally loose (whitespace + case only). It will not catch punctuation modernization (curly → straight quotes, em-dash → hyphen). If real false rejections turn up, extend the `normalize` helper inside `is_verbatim_excerpt`.
+Both checks run in `pipeline._select_validated_passage()`. If either fails, the function appends the relevant follow-up instruction(s) — `PASSAGE_VERBATIM_RETRY_INSTRUCTION` and/or `passage_length_retry_instruction(actual_count)` — and re-prompts once. If the second response still fails, the pipeline accepts it and prints a warning. Grep run logs for `[passage check]` to find rows that failed.
+
+Two reinforcements help the model behave on the first try:
+- `PASSAGE_PROMPT` ends with the hard-constraint framing: *"…between 100 and 300 words. The length is a hard constraint: count the words and do not exceed 300. Return only a verbatim excerpt…"* — placed at the end of the user prompt, where models attend most.
+- The length retry instruction includes the actual word count the model emitted, so it can correct in the right direction.
+
+Normalization for the verbatim check is intentionally loose (whitespace + case only). It will not catch punctuation modernization (curly → straight quotes, em-dash → hyphen). If real false rejections turn up, extend the `normalize` helper inside `is_verbatim_excerpt`.
 
 ## Pipeline shape
 

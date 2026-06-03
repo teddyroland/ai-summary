@@ -55,7 +55,7 @@ Please generate a list of [[ SELECTION_NUMBER ]] high-level interpretive questio
 Questions: """
 
 
-PASSAGE_PROMPT = """Select a single poem or a 100-200 word passage from the following text, which best addresses the requirement.
+PASSAGE_PROMPT = """Select a single poem or a passage of between 100 and 300 words from the following text, which best addresses the requirement.
 
 Author: [[ AUTHOR ]]
 
@@ -65,18 +65,28 @@ Requirement: [[ REQUIREMENT ]]
 
 Complete Text: [[ TEXT ]]
 
-Select a single poem or a 100-200 word passage from the above text, which best addresses the requirement. Return only a verbatim excerpt: a literal, consecutive copy of words taken directly from the source. Do not add commentary, analysis, framing, headings, or explanation. Do not paraphrase, summarize, or modernize the text.
+Select a single poem or a passage of between 100 and 300 words from the above text, which best addresses the requirement. The length is a hard constraint: count the words and do not exceed 300. Return only a verbatim excerpt: a literal, consecutive copy of words taken directly from the source. Do not add commentary, analysis, framing, headings, or explanation. Do not paraphrase, summarize, or modernize the text.
 
 Poem/Passage: """
 
 
-# A follow-up instruction appended to PASSAGE_PROMPT when the model's first
-# response failed the verbatim-substring check. Used by pipeline.py.
+# Follow-up instructions appended to PASSAGE_PROMPT when the first response
+# fails a check. Used by pipeline.py to drive a stricter re-prompt.
 PASSAGE_VERBATIM_RETRY_INSTRUCTION = (
     "\n\nYour previous response included text that does not appear verbatim "
     "in the source. Return ONLY a literal, consecutive excerpt copied directly "
     "from the source above. No commentary, analysis, or framing."
 )
+
+
+def passage_length_retry_instruction(actual_word_count: int) -> str:
+    """Length-correction follow-up. Includes the actual word count so the
+    model sees how far off it was."""
+    return (
+        f"\n\nYour previous response was {actual_word_count} words. "
+        f"Return a single passage of between 100 and 300 words. "
+        f"This is a hard constraint: count the words and do not exceed 300."
+    )
 
 
 # ---------------------------------------------------------------------------

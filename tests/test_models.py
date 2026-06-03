@@ -90,11 +90,27 @@ def test_with_retries_does_not_retry_non_transient():
 # OpenAI provider — mocked client, JSON parsing
 # ---------------------------------------------------------------------------
 
-def _mock_openai_response(content: str):
+def _mock_openai_response(content: str, finish_reason: str = "stop"):
     """Build a fake OpenAI response mimicking chat.completions.create()."""
     message = SimpleNamespace(content=content)
-    choice = SimpleNamespace(message=message)
+    choice = SimpleNamespace(message=message, finish_reason=finish_reason)
     return SimpleNamespace(choices=[choice])
+
+
+def test_call_openai_raises_on_length_truncation(monkeypatch):
+    """When finish_reason='length', the Structured Outputs content is a
+    truncated string. We raise a clear RuntimeError rather than letting
+    json.loads fail with an opaque parse error."""
+    fake_client = MagicMock()
+    # Half-emitted string, would fail json.loads with "Unterminated string".
+    fake_client.chat.completions.create.return_value = _mock_openai_response(
+        content='{"passage": "the beginning of a long passage that was cut off',
+        finish_reason="length",
+    )
+    monkeypatch.setattr(models, "_get_openai_client", lambda: fake_client)
+
+    with pytest.raises(RuntimeError, match="truncated"):
+        models.call_model("gpt-4.1", "sys", "user", "passage")
 
 
 def test_call_openai_parses_structured_output(monkeypatch):

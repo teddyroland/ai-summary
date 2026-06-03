@@ -70,6 +70,23 @@ def test_verbatim_retry_instruction_is_strict():
     assert "no commentary" in prompts.PASSAGE_VERBATIM_RETRY_INSTRUCTION.lower()
 
 
+def test_passage_length_retry_instruction_mentions_count_and_bounds():
+    msg = prompts.passage_length_retry_instruction(547)
+    assert "547 words" in msg
+    assert "100" in msg and "300" in msg
+
+
+def test_passage_prompt_emphasizes_word_count():
+    out = prompts.render_passage_prompt(
+        author="A", title="T", requirement="Q?", text="full text",
+    )
+    # The hardened instruction should mention the word range and the "hard
+    # constraint" / "do not exceed" framing.
+    assert "100 and 300 words" in out
+    assert "hard constraint" in out.lower()
+    assert "do not exceed" in out.lower()
+
+
 def test_summary_prompt_includes_passage_requirement_and_text():
     out = prompts.render_summary_prompt(
         author="A",

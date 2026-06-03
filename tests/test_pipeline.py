@@ -9,6 +9,13 @@ import io_utils
 import pipeline
 
 
+# A deterministic 150-word passage used by the fake_corpus fixture below.
+# Sits comfortably inside the 100-300 word window enforced by
+# pipeline._passage_failures, so the mock caller's passage responses pass
+# both quality checks without triggering a re-prompt.
+PASSAGE_150 = " ".join(f"w{i}" for i in range(1, 151))
+
+
 # ---------------------------------------------------------------------------
 # Fixtures: tiny fake corpus and a deterministic mock call_model
 # ---------------------------------------------------------------------------
@@ -17,21 +24,18 @@ import pipeline
 def fake_corpus(tmp_path, monkeypatch):
     """Two-text corpus on disk; meta_rows and a temp_dir for caches.
 
-    The mock caller below returns the literal string "selected passage by
-    <model_key>" for passage requests. The fixture files contain that exact
-    phrase so the pipeline's verbatim check (substring against the source)
-    passes without triggering a re-prompt.
+    Both source files include PASSAGE_150 verbatim, so the mock caller can
+    return that string for "passage" requests and pass both the verbatim
+    substring check and the 100-300 word range check.
     """
     plaintext = tmp_path / "plaintext"
     plaintext.mkdir()
     (plaintext / "01_a.txt").write_text(
-        "This is text A. Contains selected passage by gpt-4.1 and "
-        "selected passage by llama-4-maverick.",
+        f"Front matter for text A.\n\n{PASSAGE_150}\n\nMore text A.",
         encoding="utf-8",
     )
     (plaintext / "02_b.txt").write_text(
-        "This is text B. Contains selected passage by gpt-4.1 and "
-        "selected passage by llama-4-maverick.",
+        f"Front matter for text B.\n\n{PASSAGE_150}\n\nMore text B.",
         encoding="utf-8",
     )
 
@@ -67,7 +71,7 @@ def _make_mock_caller():
             items = [f"{label}{i} for {model_key}" for i in range(1, n + 1)]
             return {schema_name: items}
         if schema_name == "passage":
-            return {"passage": f"selected passage by {model_key}"}
+            return {"passage": PASSAGE_150}
         if schema_name == "summary":
             return {"summary": f"summary by {model_key}"}
         raise ValueError(schema_name)
@@ -101,7 +105,7 @@ def test_passage_selection_record_count_and_ids(fake_corpus):
     assert len(cache) == 4
     assert cache[0]["model"] == "gpt-4.1"
     assert cache[0]["requirement"].startswith("q1")
-    assert cache[0]["passage_text"].startswith("selected passage")
+    assert cache[0]["passage_text"] == PASSAGE_150
 
 
 def test_passage_selection_with_multiple_models(fake_corpus):
@@ -267,7 +271,7 @@ def test_summary_record_has_expected_fields(fake_corpus):
 
 
 # ---------------------------------------------------------------------------
-# Verbatim check on selected passages
+# Passage quality checks (verbatim + word-count)
 # ---------------------------------------------------------------------------
 
 def test_is_verbatim_excerpt_basic_match():
@@ -289,11 +293,24 @@ def test_is_verbatim_excerpt_rejects_added_commentary():
     )
 
 
-def test_verbatim_check_passes_through_when_response_is_substring(fake_corpus):
-    """A response that is a verbatim substring should not trigger a retry."""
+def test_count_words_basic():
+    assert pipeline.count_words("the quick brown fox") == 4
+    assert pipeline.count_words("  spaces   collapsed   to   four ") == 4
+    assert pipeline.count_words("") == 0
+
+
+def test_is_in_word_range_inclusive_bounds():
+    # 100 and 200 are both accepted (inclusive bounds).
+    assert pipeline.is_in_word_range(" ".join(["w"] * 100), 100, 200)
+    assert pipeline.is_in_word_range(" ".join(["w"] * 200), 100, 200)
+    assert not pipeline.is_in_word_range(" ".join(["w"] * 99), 100, 200)
+    assert not pipeline.is_in_word_range(" ".join(["w"] * 201), 100, 200)
+
+
+def test_passage_check_passes_through_when_response_is_clean(fake_corpus):
+    """A response that is verbatim AND in the word range should not retry."""
     meta_rows, temp_dir = fake_corpus
 
-    # Track every call so we can assert on retry behavior.
     calls: list[tuple[str, str]] = []
 
     def call(model_key, system, user, schema_name):
@@ -301,8 +318,7 @@ def test_verbatim_check_passes_through_when_response_is_substring(fake_corpus):
         if schema_name == "questions":
             return {"questions": ["q1"]}
         if schema_name == "passage":
-            # Substring of both 01_a.txt and 02_b.txt fixtures.
-            return {"passage": "selected passage by gpt-4.1"}
+            return {"passage": PASSAGE_150}
         raise ValueError(schema_name)
 
     passages = pipeline.run_passage_selection(
@@ -312,17 +328,15 @@ def test_verbatim_check_passes_through_when_response_is_substring(fake_corpus):
         call_model=call,
         temp_dir=temp_dir,
     )
-    # 2 texts × 1 question → 2 passages, with 1 questions call + 1 passage call
-    # per text (no retries). Total schemas: ["questions","passage"] × 2.
+    # 2 texts × 1 requirement → 2 passages; no retries.
     assert len(passages) == 2
     assert [s for s, _ in calls] == ["questions", "passage", "questions", "passage"]
 
 
-def test_verbatim_check_re_prompts_on_non_substring(fake_corpus):
-    """Non-substring response should trigger one retry with stricter instruction."""
+def test_passage_check_re_prompts_on_non_substring(fake_corpus):
+    """Non-substring response should trigger one retry."""
     meta_rows, temp_dir = fake_corpus
 
-    # First passage call returns commentary, second returns a clean substring.
     state = {"passage_call_count": 0}
 
     def call(model_key, system, user, schema_name):
@@ -331,14 +345,50 @@ def test_verbatim_check_re_prompts_on_non_substring(fake_corpus):
         if schema_name == "passage":
             state["passage_call_count"] += 1
             if state["passage_call_count"] % 2 == 1:
-                # First attempt: bad (commentary).
+                # First attempt: commentary (non-substring AND too short).
                 return {"passage": "This poem exemplifies a key theme."}
             else:
-                # Second attempt: clean substring of the source.
-                return {"passage": "selected passage by gpt-4.1"}
+                return {"passage": PASSAGE_150}
         raise ValueError(schema_name)
 
-    # Limit to one text so we can count calls deterministically.
+    one_text = [meta_rows[0]]
+    passages = pipeline.run_passage_selection(
+        meta_rows=one_text,
+        model_keys=["gpt-4.1"],
+        selection_n=1,
+        call_model=call,
+        temp_dir=temp_dir,
+    )
+    assert state["passage_call_count"] == 2
+    assert len(passages) == 1
+    assert passages[0]["passage_text"] == PASSAGE_150
+
+
+def test_passage_check_re_prompts_on_overlong_passage(fake_corpus, capsys):
+    """A verbatim but over-max response should also trigger a retry, and the
+    retry instruction should mention the actual word count."""
+    meta_rows, temp_dir = fake_corpus
+    # Build a 400-word passage (over the 300-word max). Append it to text A
+    # so the verbatim check still passes for the overlong response.
+    overlong = " ".join(f"x{i}" for i in range(1, 401))  # 400 words
+    target = pipeline.io_utils.PLAINTEXT_DIR / meta_rows[0]["filename"]
+    target.write_text(target.read_text() + "\n\n" + overlong, encoding="utf-8")
+
+    state = {"passage_call_count": 0}
+    captured_retry_prompt: list[str] = []
+
+    def call(model_key, system, user, schema_name):
+        if schema_name == "questions":
+            return {"questions": ["q1"]}
+        if schema_name == "passage":
+            state["passage_call_count"] += 1
+            if state["passage_call_count"] == 1:
+                return {"passage": overlong}  # 400 words, verbatim
+            # The second call should have the length retry instruction appended.
+            captured_retry_prompt.append(user)
+            return {"passage": PASSAGE_150}
+        raise ValueError(schema_name)
+
     one_text = [meta_rows[0]]
     passages = pipeline.run_passage_selection(
         meta_rows=one_text,
@@ -348,13 +398,16 @@ def test_verbatim_check_re_prompts_on_non_substring(fake_corpus):
         temp_dir=temp_dir,
     )
 
-    # One bad + one good passage call.
     assert state["passage_call_count"] == 2
     assert len(passages) == 1
-    assert passages[0]["passage_text"] == "selected passage by gpt-4.1"
+    # The retry prompt should mention the actual count (400).
+    assert "400 words" in captured_retry_prompt[0]
+    # And the warning log should name the length failure.
+    captured = capsys.readouterr().out
+    assert "length:400" in captured
 
 
-def test_verbatim_check_accepts_response_when_retry_also_fails(fake_corpus, capsys):
+def test_passage_check_accepts_response_when_retry_also_fails(fake_corpus, capsys):
     """If the retry also fails, accept the response but warn."""
     meta_rows, temp_dir = fake_corpus
 
@@ -381,4 +434,4 @@ def test_verbatim_check_accepts_response_when_retry_also_fails(fake_corpus, caps
     # And it warned on stdout.
     captured = capsys.readouterr().out
     assert "re-prompting" in captured
-    assert "still not verbatim" in captured
+    assert "still failing" in captured

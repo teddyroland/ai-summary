@@ -59,7 +59,13 @@ MODEL_REGISTRY: dict[str, dict[str, str]] = {
 
 TEMPERATURE = 1.0
 TOP_P = 1.0
-MAX_OUTPUT_TOKENS = 2048
+# Generous output cap. GPT-4.1 supports up to 32,768 output tokens; 16,384
+# leaves comfortable headroom even when the model writes more than the
+# prompts ask for. Truncation is fatal here because Structured Outputs
+# returns a half-emitted JSON string that json.loads can't repair, so we
+# prefer a high ceiling and detect truncation explicitly (see finish_reason
+# check in _call_openai).
+MAX_OUTPUT_TOKENS = 16384
 
 MAX_RETRIES = 3  # i.e. 1 initial attempt + up to 3 retries = 4 attempts total
 
@@ -251,9 +257,17 @@ def _call_openai(
             max_completion_tokens=MAX_OUTPUT_TOKENS,
             response_format={"type": "json_schema", "json_schema": schema},
         )
-        content = response.choices[0].message.content
-        # Structured Outputs guarantees valid JSON, but we still parse it.
-        return json.loads(content)
+        choice = response.choices[0]
+        # OpenAI sets finish_reason="length" when max_completion_tokens is hit.
+        # Structured Outputs returns a truncated half-string in that case, so
+        # json.loads will fail. Raise a clearer error before that happens.
+        if choice.finish_reason == "length":
+            raise RuntimeError(
+                f"OpenAI response truncated at MAX_OUTPUT_TOKENS={MAX_OUTPUT_TOKENS} "
+                f"for schema {schema_name!r}. Increase the cap or tighten the prompt."
+            )
+        # Structured Outputs guarantees valid JSON when not truncated.
+        return json.loads(choice.message.content)
 
     return _with_retries(attempt, _is_openai_transient)
 

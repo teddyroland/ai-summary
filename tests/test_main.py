@@ -10,6 +10,11 @@ import models
 import pipeline
 
 
+# A 150-word passage that satisfies the pipeline's passage quality checks
+# (verbatim substring + 100-300 word range).
+_PASSAGE_150 = " ".join(f"w{i}" for i in range(1, 151))
+
+
 @pytest.fixture
 def fake_workspace(tmp_path, monkeypatch):
     """Stage a workspace with two texts, plus a mock call_model."""
@@ -17,13 +22,13 @@ def fake_workspace(tmp_path, monkeypatch):
     data = tmp_path / "data"
     plaintext = data / "plaintext"
     plaintext.mkdir(parents=True)
-    # Source text contains the mock's passage response so the pipeline's
-    # verbatim-substring check passes without triggering a re-prompt.
+    # Each source file embeds _PASSAGE_150 verbatim so the mock's passage
+    # response passes both verbatim and word-count checks.
     (plaintext / "01_a.txt").write_text(
-        "Text A body. Contains passage-by-gpt-4.1.", encoding="utf-8",
+        f"Front matter A.\n\n{_PASSAGE_150}\n\nMore A.", encoding="utf-8",
     )
     (plaintext / "02_b.txt").write_text(
-        "Text B body. Contains passage-by-gpt-4.1.", encoding="utf-8",
+        f"Front matter B.\n\n{_PASSAGE_150}\n\nMore B.", encoding="utf-8",
     )
     meta_path = data / "meta.csv"
     meta_path.write_text(
@@ -46,7 +51,7 @@ def fake_workspace(tmp_path, monkeypatch):
         if schema_name == "requirements":
             return {"requirements": ["r1", "r2"]}
         if schema_name == "passage":
-            return {"passage": f"passage-by-{model_key}"}
+            return {"passage": _PASSAGE_150}
         if schema_name == "summary":
             return {"summary": f"summary-by-{model_key}"}
         raise ValueError(schema_name)
