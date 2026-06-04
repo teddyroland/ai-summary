@@ -61,6 +61,23 @@ Defaults are `--selection 1 --scene 1 --global 1 --models gpt-4.1`, useful for q
 
 Passages sort by `(model, text_id, passage_id)`; summaries sort by `(model, text_id, passage_id, summary_id)`. `passage_id` and `summary_id` are 1-based integers whose counters reset within `(text_id, model)` and `(text_id, model, passage_id, summary_type)` respectively — see `CLAUDE.md` for the full schema. The `temp/` cache is append-only across runs and not cleared automatically — see `TODO.md` for the cleanup step between debugging and full-dataset runs.
 
+## Recovering from a partial run
+
+If a long run fails partway through (a model times out, a Bedrock throttling spike exhausts retries, etc.), the pipeline either writes a `[FAILED ...]` marker row in place of the failed call's text field or skips the parent entirely (no row written). Re-running `main.py` would re-do *everything*, including all the successful calls.
+
+Use `code/backfill.py` to re-run only the failed slots:
+
+```bash
+# Backfill missing/marker passages for one model
+python code/backfill.py --model llama-4-maverick --stage passages
+
+# Backfill missing/marker summaries for one model and one summary type
+python code/backfill.py --model llama-4-maverick --stage global
+python code/backfill.py --model gpt-4.1 --stage scene
+```
+
+For each (model, stage), the script reads the relevant `results/*.csv`, finds marker rows and missing IDs, re-attempts only those slots, appends new records to the JSONL cache in `temp/`, and recompiles the final CSV with the standard dedup (so markers are overwritten by their backfilled counterparts). Marker rows are re-run with the *original* condition preserved in the row, so the condition→item pairing is restored; absent rows get a fresh Stage-1 list, since the original list was never persisted.
+
 ## Running the tests
 
 ```bash

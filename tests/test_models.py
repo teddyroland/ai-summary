@@ -172,6 +172,39 @@ def test_call_bedrock_recovers_from_markdown_fences(monkeypatch):
     assert fake_client.converse.call_count == 1
 
 
+def test_call_bedrock_accepts_raw_text_for_passage_when_both_attempts_fail(monkeypatch):
+    """LLaMA on long inputs sometimes emits the passage as raw text without
+    the JSON wrapper. After both stricter attempts still fail to parse, the
+    Bedrock layer accepts the raw text as the passage value."""
+    raw_passage = "An excerpt from the source novel, returned without JSON wrapping."
+    fake_client = MagicMock()
+    fake_client.converse.side_effect = [
+        _bedrock_converse_response(raw_passage),
+        _bedrock_converse_response(raw_passage),  # stricter retry, still raw
+    ]
+    monkeypatch.setattr(models, "_get_bedrock_client", lambda: fake_client)
+
+    result = models.call_model("llama-4-maverick", "sys", "user", "passage")
+
+    assert result == {"passage": raw_passage}
+    assert fake_client.converse.call_count == 2
+
+
+def test_call_bedrock_does_not_accept_raw_text_for_list_schemas(monkeypatch):
+    """The raw-text fallback only applies to passage/summary. Questions and
+    requirements still raise on unparseable responses because we can't safely
+    coerce free text into a list."""
+    fake_client = MagicMock()
+    fake_client.converse.side_effect = [
+        _bedrock_converse_response("plain text, no JSON"),
+        _bedrock_converse_response("plain text, no JSON"),
+    ]
+    monkeypatch.setattr(models, "_get_bedrock_client", lambda: fake_client)
+
+    with pytest.raises(json.JSONDecodeError):
+        models.call_model("llama-4-maverick", "sys", "user", "questions")
+
+
 def test_call_bedrock_retries_with_stricter_prompt_on_bad_json(monkeypatch):
     # First response is unparseable garbage; second response (stricter) is valid.
     fake_client = MagicMock()

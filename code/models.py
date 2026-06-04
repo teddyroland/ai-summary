@@ -59,13 +59,14 @@ MODEL_REGISTRY: dict[str, dict[str, str]] = {
 
 TEMPERATURE = 1.0
 TOP_P = 1.0
-# Generous output cap. GPT-4.1 supports up to 32,768 output tokens; 16,384
-# leaves comfortable headroom even when the model writes more than the
-# prompts ask for. Truncation is fatal here because Structured Outputs
-# returns a half-emitted JSON string that json.loads can't repair, so we
-# prefer a high ceiling and detect truncation explicitly (see finish_reason
-# check in _call_openai).
-MAX_OUTPUT_TOKENS = 16384
+# Generous output cap, shared across providers. LLaMA 4 Maverick on Bedrock
+# enforces a per-call hard limit of 8,192 output tokens (Bedrock returns a
+# ValidationException above that); GPT-4.1 accepts up to 32,768 but 8,192
+# is still ~6,000 words — far more than any of our prompts request.
+# Truncation matters because Structured Outputs returns a half-emitted JSON
+# string that json.loads can't repair, so we prefer a high ceiling and
+# detect truncation explicitly (see finish_reason check in _call_openai).
+MAX_OUTPUT_TOKENS = 8192
 
 MAX_RETRIES = 3  # i.e. 1 initial attempt + up to 3 retries = 4 attempts total
 
@@ -141,11 +142,21 @@ def _get_bedrock_client() -> Any:
     global _bedrock_client
     if _bedrock_client is None:
         import boto3
+        from botocore.config import Config
 
         # boto3 picks up AWS_BEARER_TOKEN_BEDROCK and AWS_REGION from the
         # environment automatically.
+        # Adaptive retry mode is throttling-aware (jittered backoff that
+        # widens when Bedrock pushes back on TPM). The Powers novel is ~158K
+        # tokens per call, so we routinely brush against Bedrock's per-account
+        # TPM limit; without adaptive retry, sustained throttling kills the
+        # run after a few seconds of fixed backoff.
         region = os.environ.get("AWS_REGION", "us-west-2")
-        _bedrock_client = boto3.client("bedrock-runtime", region_name=region)
+        _bedrock_client = boto3.client(
+            "bedrock-runtime",
+            region_name=region,
+            config=Config(retries={"max_attempts": 10, "mode": "adaptive"}),
+        )
     return _bedrock_client
 
 
@@ -389,9 +400,26 @@ def _call_bedrock(
             parsed = _extract_json(text)
             return _ensure_bedrock_shape(parsed, schema_name)
         except (json.JSONDecodeError, ValueError):
-            # One self-correcting retry with a stricter instruction.
-            text = one_call(stricter=True)
+            pass
+
+        # One self-correcting retry with a stricter instruction.
+        text = one_call(stricter=True)
+        try:
             parsed = _extract_json(text)
             return _ensure_bedrock_shape(parsed, schema_name)
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+        # Last-resort fallback for single-string schemas: some Bedrock models
+        # (notably LLaMA on long inputs) ignore the JSON wrapper and emit just
+        # the passage / summary content. Accept the raw text rather than
+        # crashing the run. List schemas (questions, requirements) cannot be
+        # rescued this way and still propagate the JSON failure.
+        if schema_name in {"passage", "summary"}:
+            return {schema_name: text.strip()}
+        raise json.JSONDecodeError(
+            f"Bedrock returned unparseable JSON for schema {schema_name!r}",
+            text, 0,
+        )
 
     return _with_retries(attempt, _is_bedrock_transient)

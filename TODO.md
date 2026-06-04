@@ -29,5 +29,6 @@ Status legend: `[ ]` pending, `[~]` in progress, `[x]` completed.
 
 ## Phase 4 — Full run (assistant)
 
-- [ ] Run `python code/main.py --selection 5 --scene 5 --global 5 --models gpt-4.1,llama-4-maverick` against the full corpus.
-- [ ] Verify final CSVs in `results/`.
+- [x] Run `python code/main.py --selection 5 --scene 5 --global 5 --models gpt-4.1,llama-4-maverick` against the full corpus.
+- [x] Verify final CSVs in `results/`. 20 passages, 100 scene summaries, 90 global summaries on first pass; 12 LLaMA global slots lost to Bedrock throttling.
+- [x] Backfill the throttled LLaMA global slots with `python code/backfill.py --model llama-4-maverick --stage global`. Final state: 20 passages, 100 scene summaries, 100 global summaries; no marker rows in any CSV.

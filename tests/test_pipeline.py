@@ -407,6 +407,64 @@ def test_passage_check_re_prompts_on_overlong_passage(fake_corpus, capsys):
     assert "length:400" in captured
 
 
+def test_passage_failure_substitutes_marker_and_continues(fake_corpus, capsys):
+    """If the passage call raises after all retries, the pipeline records a
+    failure marker and continues with the next requirement."""
+    meta_rows, temp_dir = fake_corpus
+    one_text = [meta_rows[0]]
+
+    def call(model_key, system, user, schema_name):
+        if schema_name == "questions":
+            return {"questions": ["q1", "q2"]}
+        if schema_name == "passage":
+            # Raise a non-transient error on every passage call.
+            raise RuntimeError("simulated persistent failure")
+        raise ValueError(schema_name)
+
+    passages = pipeline.run_passage_selection(
+        meta_rows=one_text,
+        model_keys=["gpt-4.1"],
+        selection_n=2,
+        call_model=call,
+        temp_dir=temp_dir,
+    )
+
+    assert len(passages) == 2
+    for p in passages:
+        assert p["passage_text"].startswith("[FAILED passage:")
+    captured = capsys.readouterr().out
+    assert "[FAIL] passage" in captured
+
+
+def test_questions_failure_skips_text_for_model(fake_corpus, capsys):
+    """If the questions call raises, the (text, model) pair yields zero
+    passages — the rest of the run still completes."""
+    meta_rows, temp_dir = fake_corpus
+
+    def call(model_key, system, user, schema_name):
+        # gpt-4.1's questions fail; llama-4-maverick's succeed.
+        if schema_name == "questions":
+            if model_key == "gpt-4.1":
+                raise RuntimeError("simulated questions failure")
+            return {"questions": ["q1"]}
+        if schema_name == "passage":
+            return {"passage": PASSAGE_150}
+        raise ValueError(schema_name)
+
+    passages = pipeline.run_passage_selection(
+        meta_rows=meta_rows,
+        model_keys=["gpt-4.1", "llama-4-maverick"],
+        selection_n=1,
+        call_model=call,
+        temp_dir=temp_dir,
+    )
+
+    # gpt-4.1 contributed 0 passages; llama did 2 (one per text).
+    assert [p["model"] for p in passages] == ["llama-4-maverick", "llama-4-maverick"]
+    captured = capsys.readouterr().out
+    assert "[FAIL] questions" in captured
+
+
 def test_passage_check_accepts_response_when_retry_also_fails(fake_corpus, capsys):
     """If the retry also fails, accept the response but warn."""
     meta_rows, temp_dir = fake_corpus

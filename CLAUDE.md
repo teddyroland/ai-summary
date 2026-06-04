@@ -72,6 +72,8 @@ This lets us iterate during Phase 2 debugging without losing earlier records.
 
 Between Phase 2 (prototype) and Phase 4 (full run), the user manually clears `temp/` (`rm temp/*.jsonl`) so the production run is clean. See `TODO.md`.
 
+`code/backfill.py` is a recovery utility for partial-run failures. It reads `results/*.csv` to find marker rows (text field starts with `[FAILED ...]`) and missing IDs for a given (model, stage), re-runs only those calls, appends new records to the same `temp/` JSONLs, and triggers `compile_csv` again. The compound dedup makes this safe — backfilled rows overwrite the markers they replace and successful pre-existing rows are untouched. For marker rows it reuses the stored `requirement` field so the original condition→item pairing is preserved; for absent rows it has to regenerate a fresh Stage-1 list (questions or requirements) since the originals were only ever held in memory.
+
 ## Passage selection: quality checks
 
 Stage 4a (passage selection) is the only place where the model is supposed to copy from the source, and the only place we ask for a specific length. Two safeguards run together after every passage response:

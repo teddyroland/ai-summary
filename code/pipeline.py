@@ -36,6 +36,17 @@ import prompts
 SUMMARY_TYPES = ("scene", "global")
 
 
+def _failure_marker(stage: str, exc: BaseException) -> str:
+    """Compact one-line marker recorded in place of a failed model response.
+
+    Long runs need to be resilient: one persistently-failing call shouldn't
+    invalidate hundreds of successful ones. When the model layer gives up on
+    a single call, we record this marker in the JSONL/CSV so the failure is
+    inspectable and the rest of the run continues.
+    """
+    return f"[FAILED {stage}: {type(exc).__name__}: {str(exc)[:200]}]"
+
+
 # Type aliases for readability.
 MetaIndex = dict[str, dict]
 ModelCaller = Callable[[str, str, str, str], dict]
@@ -203,18 +214,29 @@ def run_passage_selection(
             text = entry["text"]
 
             # Prompt 1 — generate the list of interpretive requirements.
+            # If this call fails after all retries we skip the remaining
+            # passages for this (text, model) — without a question list there
+            # is nothing to iterate over — and log so the user can find the
+            # missing rows in the final CSV.
             questions_prompt = prompts.render_questions_prompt(
                 author=row["author"],
                 title=row["title"],
                 text=text,
                 selection_n=selection_n,
             )
-            questions_response = call_model(
-                model_key, prompts.SYSTEM_PROMPT, questions_prompt, "questions"
-            )
-            # The questions schema still returns a "questions" field. We treat
-            # each entry as a "requirement" in the downstream record and CSV.
-            requirements = questions_response["questions"]
+            try:
+                questions_response = call_model(
+                    model_key, prompts.SYSTEM_PROMPT, questions_prompt, "questions"
+                )
+                # The questions schema returns a "questions" field. We treat
+                # each entry as a "requirement" in the downstream record/CSV.
+                requirements = questions_response["questions"]
+            except Exception as e:
+                print(
+                    f"  [FAIL] questions for {text_id}/{model_key}: "
+                    f"{type(e).__name__}: {str(e)[:200]}; skipping (model,text)"
+                )
+                continue
 
             # Prompt 2 — one passage per requirement, validated as a verbatim
             # substring of the source. passage_id is a 1-based counter that
@@ -227,13 +249,20 @@ def run_passage_selection(
                     requirement=requirement,
                     text=text,
                 )
-                passage_text = _select_validated_passage(
-                    model_key=model_key,
-                    user_prompt=passage_prompt,
-                    source_text=text,
-                    call_model=call_model,
-                    passage_label=f"{text_id}/{model_key}/p{i}",
-                )
+                try:
+                    passage_text = _select_validated_passage(
+                        model_key=model_key,
+                        user_prompt=passage_prompt,
+                        source_text=text,
+                        call_model=call_model,
+                        passage_label=f"{text_id}/{model_key}/p{i}",
+                    )
+                except Exception as e:
+                    print(
+                        f"  [FAIL] passage {text_id}/{model_key}/p{i}: "
+                        f"{type(e).__name__}: {str(e)[:200]}; substituting marker"
+                    )
+                    passage_text = _failure_marker("passage", e)
                 record = {
                     "text_id": text_id,
                     "model": model_key,
@@ -294,15 +323,24 @@ def run_summaries(
             entry = meta_index[text_id]
             row = entry["row"]
             text = entry["text"]
+            pid = passage["passage_id"]
 
-            # Prompt 1 — requirements list.
+            # Prompt 1 — requirements list. On failure, skip the summaries
+            # for this passage and log; the next passage is independent.
             req_prompt = render_requirements(
                 row["author"], row["title"], passage["passage_text"], summary_n
             )
-            req_response = call_model(
-                model_key, prompts.SYSTEM_PROMPT, req_prompt, "requirements"
-            )
-            requirements = req_response["requirements"]
+            try:
+                req_response = call_model(
+                    model_key, prompts.SYSTEM_PROMPT, req_prompt, "requirements"
+                )
+                requirements = req_response["requirements"]
+            except Exception as e:
+                print(
+                    f"  [FAIL] {kind} requirements for {text_id}/{model_key}/p{pid}: "
+                    f"{type(e).__name__}: {str(e)[:200]}; skipping passage"
+                )
+                continue
 
             # Prompt 2 — one summary per requirement (shared template).
             for j, requirement in enumerate(requirements, start=1):
@@ -313,17 +351,25 @@ def run_summaries(
                     requirement=requirement,
                     text=text,
                 )
-                summary_response = call_model(
-                    model_key, prompts.SYSTEM_PROMPT, summary_prompt, "summary"
-                )
+                try:
+                    summary_response = call_model(
+                        model_key, prompts.SYSTEM_PROMPT, summary_prompt, "summary"
+                    )
+                    summary_text = summary_response["summary"]
+                except Exception as e:
+                    print(
+                        f"  [FAIL] {kind} summary {text_id}/{model_key}/p{pid}/s{j}: "
+                        f"{type(e).__name__}: {str(e)[:200]}; substituting marker"
+                    )
+                    summary_text = _failure_marker(f"{kind}_summary", e)
                 record = {
                     "text_id": text_id,
                     "model": model_key,
-                    "passage_id": passage["passage_id"],
+                    "passage_id": pid,
                     "summary_type": kind,
                     "summary_id": j,
                     "requirement": requirement,
-                    "summary_text": summary_response["summary"],
+                    "summary_text": summary_text,
                 }
                 io_utils.append_jsonl(cache_path, record)
                 summaries.append(record)
